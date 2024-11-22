@@ -31,21 +31,24 @@ def initialize_model(model_path="Chat-UniVi/Chat-UniVi"):
     return tokenizer, model, image_processor, context_len
 
 def cal_iou(a, b):
-    a_start, a_end = a
-    b_start, b_end = b
+    if a =='nan' or b == 'nan':
+        return 'nan'
+    else:
+        a_start, a_end = a
+        b_start, b_end = b
 
-    # Calculate the intersection
-    intersection_start = max(a_start, b_start)
-    intersection_end = min(a_end, b_end)
-    intersection = max(0, intersection_end - intersection_start)
-    # Calculate the union
-    union_start = min(a_start, b_start)
-    union_end = max(a_end, b_end)
-    union = union_end - union_start
+        # Calculate the intersection
+        intersection_start = max(a_start, b_start)
+        intersection_end = min(a_end, b_end)
+        intersection = max(0, intersection_end - intersection_start)
+        # Calculate the union
+        union_start = min(a_start, b_start)
+        union_end = max(a_end, b_end)
+        union = union_end - union_start
 
-    # Calculate IoU
-    iou = intersection / union if union > 0 else 0
-    return iou
+        # Calculate IoU
+        iou = intersection / union if union > 0 else 0
+        return iou
 
 def prompt(duration, query):
     return (
@@ -54,6 +57,17 @@ def prompt(duration, query):
         "formatted as ‘[a, b]’, "
         "that corresponds to the segment of the video best matching the query: {query} "
         "Respond with only the numeric interval."
+    ).format(duration=duration, query=query)
+    
+def promptno(duration, query):
+    return (
+        "This is a {duration:.2f} second video clip. "
+        "Step 1: Does the query: '{query}' correspond to any segment in the video? "
+        "Respond with 'yes' or 'no' on the first line. "
+        "Step 2: If your response in Step 1 is 'yes', provide only one time interval formatted as '[a, b]' "
+        "on the second line, where 'a' and 'b' are numbers such that 0 ≤ a < b ≤ {duration:.2f}. "
+        "If your response in Step 1 is 'no', leave the second line blank. "
+        "Do not include any additional explanation or text beyond the specified format."
     ).format(duration=duration, query=query)
     
 def append_to_jsonl(file_path, data):
@@ -71,8 +85,10 @@ def sanity_check(prev_result): #load previous result to get qid dict
         return qid_dict
         
 if __name__ == '__main__':
-    # python zero_shot_run.py --task test 2> /dev/null | tee test.log
-    # python zero_shot_run.py --task val 2> /dev/null | tee val.log
+    # CUDA_VISIBLE_DEVICES=2 python zero_shot_run.py --task test 2> /dev/null | tee test.log
+    # CUDA_VISIBLE_DEVICES=2 python zero_shot_run.py --task val 2> /dev/null | tee val.log
+    # CUDA_VISIBLE_DEVICES=2 python zero_shot_run.py --task test2 | tee test2.log
+    # CUDA_VISIBLE_DEVICES=2 python zero_shot_run.py --task val2 | tee val2.log
     parser = argparse.ArgumentParser()
     parser.add_argument("--task", type=str, default="test", help="test or val")
     args = parser.parse_args()
@@ -95,17 +111,28 @@ if __name__ == '__main__':
         task = load_jsonl("single_test.jsonl")
     elif args.task == "val":
         task = load_jsonl("single_val.jsonl")
+    elif args.task == "test2":
+        task = load_jsonl("singleno_test.jsonl")
+    elif args.task == "val2":
+        task = load_jsonl("singleno_val.jsonl")
         
     ## single query
     # vid = "9996338863"
     # duration = 60.6299
     # query = "The adult is playing the guitar while a woman sings on stage with a drum set and a guitar behind her."
-    # qs = prompt(duration, query)
+    # # query = "There are 100 people in the video."
     # video_path = os.path.join(prefix, f"{vid}.mp4")
-    # outputs = inference(video_path, qs, model, tokenizer, image_processor, conv_mode, max_frames, video_framerate)
-    # outputs = [float(i) for i in outputs.strip("[]").split(", ")]
-    # iou = cal_iou(outputs, [0, 60.6299])
-    # print(f"Task 1: {iou}")
+    # qs_1 = promptno(duration, query)
+    # outputs_1 = inference(video_path, qs, model, tokenizer, image_processor, conv_mode, max_frames, video_framerate)
+    # signal = True if "yes" in outputs_1[:5].lower() else False
+    # if signal:
+    #     qs_2 = prompt(duration, query)
+    #     outputs_2 = inference(video_path, qs_2, model, tokenizer, image_processor, conv_mode, max_frames, video_framerate)
+    #     outputs_2 = [float(i) for i in outputs_2.strip("[]").split(", ")]
+    #     iou = cal_iou(outputs_2, [0, 60.6299])
+    #     print(f"Task 1: {iou}")
+    # else:
+    #     print(f"Task 1: no iou")
     
     # Step 3: Run inference over task, write single result to jsonl
     result_file = f"result_{args.task}.jsonl"
@@ -118,24 +145,40 @@ if __name__ == '__main__':
         duration = t["duration"]
         query = t["query"]
         qid = t["qid"]
-        gt = t["gt_timestamps"][0]
-        gt = [gt[0]*duration, gt[1]*duration]
-        qs = prompt(duration, query)
+        if t["gt_timestamps"] == []:
+            gt = "nan"
+        else:     
+            gt = t["gt_timestamps"][0]
+            gt = [gt[0]*duration, gt[1]*duration]
+        qs_1 = promptno(duration, query)
         video_path = os.path.join(prefix, f"{vid}.mp4")
         retry_count = 0
         while retry_count < 3:
             try:
-                outputs = inference(video_path, qs, model, tokenizer, image_processor, conv_mode, max_frames, video_framerate)
-                outputs = [float(i) for i in outputs.strip("[]").split(", ")]
-                iou = cal_iou(outputs, gt)
-                print(f"IOU: {iou}")
-                single_result = {
-                    "vid": vid,
-                    "qid": qid,
-                    "outputs": outputs,
-                    "gt": gt,
-                    "iou": iou,
-                }
+                outputs_1 = inference(video_path, qs_1, model, tokenizer, image_processor, conv_mode, max_frames, video_framerate)
+                signal = True if "yes" in outputs_1[:5].lower() else False
+                if signal:
+                    qs_2 = prompt(duration, query)
+                    outputs_2 = inference(video_path, qs_2, model, tokenizer, image_processor, conv_mode, max_frames, video_framerate)    
+                    outputs_2 = [float(i) for i in outputs_2.strip("[]").split(", ")]
+                    iou = cal_iou(outputs_2, gt)
+                    print(f"IOU: {iou}")
+                    single_result = {
+                        "vid": vid,
+                        "qid": qid,
+                        "outputs": outputs_2,
+                        "gt": gt,
+                        "iou": iou,
+                    }
+                else:
+                    single_result = {
+                        "vid": vid,
+                        "qid": qid,
+                        "outputs": [],
+                        "gt": gt,
+                        "iou": "nan",
+                    }
+                    print("IOU: nan")
                 append_to_jsonl(result_file, single_result)
                 break
             except:
